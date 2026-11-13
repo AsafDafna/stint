@@ -1,0 +1,4 @@
+collector/.build/
+.DS_Store
+.superpowers/
+.claude/worktrees/

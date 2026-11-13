@@ -1,0 +1,75 @@
+# stint rules file. Copy it to ~/.config/stint/rules.toml, then edit the projects and rules.
+# Keep the real file out of git: the ntfy topic works as a password.
+
+[settings]
+idle_minutes = 5             # no input for this long = not working (suspended during calls); must be 5, the collector's idle threshold
+carryover_minutes = 10       # unmatched activity keeps the previous project for this long
+gap_minutes = 2              # no sample/heartbeat for longer = not working
+raw_retention_days = 90      # samples older than this are purged; intervals and totals stay forever
+ntfy_topic = ""              # random, >= 20 chars (max 64, no "/"); empty = pushes disabled
+# ntfy_url = "https://ntfy.example.com/stint"   # optional full endpoint, overrides ntfy_topic's URL
+ntfy_timeout_seconds = 10    # a push request gives up after this long
+week_start = "sunday"        # first day of the week, "sunday" ... "saturday"; days and weeks use the Mac's system timezone
+vault_reports_dir = "~/Documents/stint-reports"  # weekly markdown reports; the brain creates the directory on the first report
+active_hours = "07:00-23:00" # health checks only fire inside this local window
+tune_until = ""              # "YYYY-MM-DD": until this date the morning push lists yesterday's top unattributed titles/URLs; empty = off
+
+# apps that count as a call when they hold the mic
+call_apps = ["com.bookry.wavebox", "com.google.Chrome", "us.zoom.xos", "com.tinyspeck.slackmacgap", "com.microsoft.teams2"]
+
+# One table per project. weekly_cap_hours (optional) is a weekly target: the pushes show the hours left and
+# warn at 80% and 100%, and the weekly report shows "target N · short by / over by". paid is stored, but
+# nothing reads it yet.
+[projects.acme]
+weekly_cap_hours = 20
+paid = true
+
+[projects.phd]
+[projects.personal-dev]
+
+# Rules: ordered, first match wins. A rule names a project and at least one condition; every condition it
+# names must hold.
+#   app          the frontmost app's bundle id, exact
+#   title_regex  Go regexp on the window title
+#   url_regex    Go regexp on the browser tab's URL
+#   cwd_prefix   the focused terminal's directory; `~` is expanded on both sides. The next path segment
+#                becomes the sub-project (none on an exact-prefix match)
+# optional per rule: subproject = "name" books the match to a fixed sub-project ([a-z0-9-]); with cwd_prefix it
+# replaces the next path segment
+# optional per rule: from / until = "YYYY-MM-DD" (local days, inclusive; either may be left out) limit the rule to
+# those days. A dated correction outlives `stint recompute`; put it above the rule it corrects, e.g. one day in a
+# scratch folder that was all thesis work:
+#   [[rules]]
+#   project = "phd"
+#   cwd_prefix = "~/dev-projects/scratch"
+#   subproject = "thesis"
+#   from = "2026-11-08"
+#   until = "2026-11-08"
+# the stretch pop-up appends its learned rules at the end of this file, each under a "# added by stint pop-up" line;
+# rules above them win. For an app you never want asked about (WhatsApp), declare a project such as
+# [projects.personal] once and tick "always" -> personal in the pop-up.
+[[rules]]
+project = "acme"
+app = "com.tinyspeck.slackmacgap"
+title_regex = ' - Acme - Slack$'        # Slack titles end in " - <workspace> - Slack"
+
+[[rules]]
+project = "acme"
+cwd_prefix = "~/dev-projects/acme"      # sub-project = next path segment
+
+[[rules]]
+project = "acme"
+# monday.com puts the account in the host, Make the organization id in the path
+url_regex = 'acme\.monday\.com/|make\.com/100000/'
+
+[[rules]]
+project = "phd"
+app = "org.zotero.zotero"
+
+[[rules]]
+project = "phd"
+url_regex = 'overleaf\.com|scholar\.google|pubmed'
+
+[[rules]]
+project = "personal-dev"
+cwd_prefix = "~/dev-projects"            # last: sub-project = next path segment
