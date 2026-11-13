@@ -10,7 +10,8 @@ ntfy_topic = ""              # random, >= 20 chars (max 64, no "/"); empty = pus
 # ntfy_url = "https://ntfy.example.com/stint"   # optional full endpoint, overrides ntfy_topic's URL
 ntfy_timeout_seconds = 10    # a push request gives up after this long
 week_start = "sunday"        # first day of the week, "sunday" ... "saturday"; days and weeks use the Mac's system timezone
-vault_reports_dir = "~/Documents/stint-reports"  # weekly markdown reports; the brain creates the directory on the first report
+vault_reports_dir = "~/stint-reports"  # weekly markdown reports; the brain creates the directory on the first report.
+# Keep it out of ~/Desktop, ~/Documents and ~/Downloads: macOS privacy protection can block the launchd brain there.
 active_hours = "07:00-23:00" # health checks only fire inside this local window
 tune_until = ""              # "YYYY-MM-DD": until this date the morning push lists yesterday's top unattributed titles/URLs; empty = off
 

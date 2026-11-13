@@ -188,8 +188,10 @@ Pushes are optional; ask the person. To turn them on, write a random topic into 
 T=$(openssl rand -hex 16); sed -i '' "s/^ntfy_topic = \"\"/ntfy_topic = \"$T\"/" ~/.config/stint/rules.toml; unset T
 ```
 
-**Person:** open `~/.config/stint/rules.toml`, copy the `ntfy_topic` value, and subscribe to it in the ntfy
-app. An empty topic disables pushes.
+Check: `grep -cE '^ntfy_topic = "[0-9a-f]{32}"' ~/.config/stint/rules.toml` prints `1`.
+
+**Person:** copy the `ntfy_topic` value from the file and subscribe to it in the ntfy app. To open the file
+for them, run `open -e ~/.config/stint/rules.toml` (Finder hides `~/.config`). An empty topic disables pushes.
 
 Then run the brain once by hand:
 
@@ -220,7 +222,8 @@ sqlite3 "$HOME/Library/Application Support/stint/stint.db" "select value from me
 ```
 
 Expect `runs = 1` or more, `last exit code = 0`, `error log empty`, and `ok`. Any other health value names the
-problem; see **Troubleshooting**. Outside `active_hours` (default 07:00–23:00) health is always `ok`, so a
+problem; see **Troubleshooting**. Right after install, `title NULL on …` is expected: check again in an hour,
+and do not change any code for it. Outside `active_hours` (default 07:00–23:00) health is always `ok`, so a
 night install proves less.
 
 **Person** check: within 60 s the menu bar item loses its `⚠︎` prefix.
@@ -279,7 +282,9 @@ push between the two steps.
   the menu bar and the weekly reports. After a change, the next run rebuilds every total with the new week.
   Weekly report files written before the change can keep the old week; `stint recompute --since <date>`
   rewrites every week from that date.
-- **Weekly reports** go to `vault_reports_dir`; the brain creates the directory on the first report.
+- **Weekly reports** go to `vault_reports_dir`; the brain creates the directory on the first report. Keep it
+  out of `~/Desktop`, `~/Documents` and `~/Downloads`: macOS privacy protection can block the launchd brain
+  there.
 - **Rule keys beyond the conditions.** `subproject = "name"` books a fixed sub-project (with `cwd_prefix` it
   replaces the next path segment). `from` / `until = "YYYY-MM-DD"` (local days, inclusive, either optional)
   limit a rule to those days. A dated rule is the durable way to correct past days, since `stint recompute`

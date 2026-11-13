@@ -9,7 +9,7 @@ import (
 
 const rulesTOML = `
 [settings]
-vault_reports_dir = "~/Documents/stint-reports"
+vault_reports_dir = "~/stint-reports"
 
 [projects.acme]
 weekly_cap_hours = 30
@@ -123,7 +123,7 @@ func TestNewCopiesRules(t *testing.T) {
 
 const datedTOML = `
 [settings]
-vault_reports_dir = "~/Documents/stint-reports"
+vault_reports_dir = "~/stint-reports"
 
 [projects.freelance]
 [projects.personal-dev]
