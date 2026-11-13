@@ -14,7 +14,7 @@ import (
 const valid = `
 [settings]
 ntfy_topic = "abcdefghijklmnopqrstuvwxyz"
-vault_reports_dir = "~/Documents/stint-reports"
+vault_reports_dir = "~/stint-reports"
 call_apps = ["us.zoom.xos"]
 tune_until = "2026-10-16"
 
@@ -42,7 +42,7 @@ func TestParseDefaultsAndDerived(t *testing.T) {
 	if s.IdleMinutes != 5 || s.CarryoverMinutes != 10 || s.GapMinutes != 2 || s.RawRetentionDays != 90 || s.NtfyTimeoutSeconds != 10 {
 		t.Errorf("defaults not applied: %+v", s)
 	}
-	if s.VaultReportsDir != "/Users/me/Documents/stint-reports" {
+	if s.VaultReportsDir != "/Users/me/stint-reports" {
 		t.Errorf("reports dir = %q", s.VaultReportsDir)
 	}
 	if cfg.Rules[0].CWDPrefix != "/Users/me/dev-projects/acme" {
@@ -85,7 +85,7 @@ func TestParseErrors(t *testing.T) {
 		{"week start abbreviated", strings.Replace(valid, "[settings]", "[settings]\nweek_start = \"mon\"", 1), "settings.week_start: want a weekday name"},
 		{"reserved project", valid + "\n[projects.unattributed]\n", "reserved"},
 		{"reserved away project", valid + "\n[projects.away]\n", "reserved"},
-		{"missing reports dir", strings.Replace(valid, "vault_reports_dir = \"~/Documents/stint-reports\"", "", 1), "vault_reports_dir"},
+		{"missing reports dir", strings.Replace(valid, "vault_reports_dir = \"~/stint-reports\"", "", 1), "vault_reports_dir"},
 		{"active hours trailing garbage", strings.Replace(valid, "[settings]", "[settings]\nactive_hours = \"07:00-23:00x\"", 1), "settings.active_hours"},
 		{"active hours single-digit hour", strings.Replace(valid, "[settings]", "[settings]\nactive_hours = \"7:00-23:00\"", 1), "settings.active_hours"},
 		{"active hours 24 as end", strings.Replace(valid, "[settings]", "[settings]\nactive_hours = \"07:00-24:00\"", 1), "settings.active_hours"},
@@ -297,7 +297,7 @@ func TestLoad(t *testing.T) {
 	if cfg.Home != home {
 		t.Errorf("Home = %q, want %q", cfg.Home, home)
 	}
-	if cfg.Settings.VaultReportsDir != filepath.Join(home, "Documents", "stint-reports") {
+	if cfg.Settings.VaultReportsDir != filepath.Join(home, "stint-reports") {
 		t.Errorf("reports dir not expanded against the real home: %q", cfg.Settings.VaultReportsDir)
 	}
 
