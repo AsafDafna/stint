@@ -2,9 +2,11 @@
 package notify
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -29,13 +31,13 @@ func NewClient(url string, timeout time.Duration) *Client {
 func (c *Client) Send(title, body string) error {
 	req, err := http.NewRequest(http.MethodPost, c.url, strings.NewReader(body))
 	if err != nil {
-		return err
+		return withoutURL(err)
 	}
 	req.Header.Set("Title", title)
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return withoutURL(err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
@@ -43,4 +45,14 @@ func (c *Client) Send(title, body string) error {
 		return fmt.Errorf("ntfy: %s", resp.Status)
 	}
 	return nil
+}
+
+// withoutURL drops the request URL from a net/url error: its path is the ntfy topic, which is the password,
+// and these errors end up in brain.err.log.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("ntfy: %s: %w", ue.Op, ue.Err)
+	}
+	return err
 }

@@ -326,6 +326,19 @@ func TestClientPostsWithTitleAndRejectsNon2xx(t *testing.T) {
 	}
 }
 
+func TestClientErrorsHideTheTopic(t *testing.T) {
+	const topic = "secret-topic-0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unreachable := srv.URL
+	srv.Close()
+	for _, u := range []string{unreachable + "/" + topic, "http://[::1/" + topic} {
+		err := NewClient(u, time.Second).Send("t", "x")
+		if err == nil || strings.Contains(err.Error(), topic) {
+			t.Errorf("Send(%q) error must hide the topic, got %v", u, err)
+		}
+	}
+}
+
 // dropIntervals makes report.TopUnattributed fail while totals (and so WeekToDate) keep working.
 func dropIntervals(t *testing.T, sq *sql.DB) {
 	t.Helper()
