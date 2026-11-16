@@ -15,6 +15,8 @@ enum Paths {
     static let db = dbDir + "/stint.db"
     static let cwdDir = home + "/.local/state/stint/cwd"
     static let herdrSocket = home + "/.config/herdr/herdr.sock"
+    static let herdrAppSocket = home + "/.config/herdr-app/herdr-app.sock"
+    static let herdrCoreSocket = home + "/.local/state/herdr-core/default/default.sock"
 }
 
 enum Bundles {
@@ -24,6 +26,9 @@ enum Bundles {
     static let browsers = [wavebox, chrome, search]
     /// herdr is a TUI; the GUI process that is frontmost while using it is Ghostty (discovered 2026-09-16).
     static let herdrHosts: Set<String> = ["com.mitchellh.ghostty"]
+    /// The herdr desktop app runs on herdr-core, not on the TUI server, so it must stay out of herdrHosts:
+    /// there it would query the wrong socket and veto the remote branch.
+    static let herdrApp = "dev.herdr.app"
     /// Synthetic `app` for samples driven by remote input (iPad over mosh into a herdr client) while the Mac is
     /// locked. Not a real bundle id on purpose: it must never collide with the brain's NonWorkApps
     /// (`com.apple.loginwindow`, the screen saver), and rules attribute these samples by cwd.
@@ -559,7 +564,7 @@ enum Herdr {
 
     private static func nextId() -> Int { counter += 1; return counter }
 
-    static func roundTrip(_ request: Data, timeoutS: Int) -> Data? {
+    static func roundTrip(_ request: Data, timeoutS: Int, at path: String = Paths.herdrSocket) -> Data? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { Darwin.close(fd) }
@@ -570,7 +575,6 @@ enum Herdr {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        let path = Paths.herdrSocket
         guard path.utf8.count < MemoryLayout.size(ofValue: addr.sun_path) else { return nil }
         withUnsafeMutableBytes(of: &addr.sun_path) { $0.copyBytes(from: path.utf8) }  // struct is zeroed, so it stays NUL-terminated
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
@@ -590,6 +594,22 @@ enum Herdr {
             if out.last == 0x0A { break }
         }
         return out.isEmpty ? nil : out
+    }
+}
+
+// MARK: - Herdr.app socket client (the herdr desktop app knows the focused pane, herdr-core knows its cwd)
+
+enum HerdrApp {
+    /// status -> ls -> terminal.get, stopping at the first failure so a dead app costs one timeout, not three.
+    static func focusedCwd(timeoutS: Int = 1) -> String? {
+        guard let status = Herdr.roundTrip(Pure.herdrAppStatusRequest(), timeoutS: timeoutS, at: Paths.herdrAppSocket),
+              let pane = Pure.herdrAppFocusedPane(status),
+              let ls = Herdr.roundTrip(Pure.herdrAppLsRequest(), timeoutS: timeoutS, at: Paths.herdrAppSocket),
+              let terminal = Pure.herdrAppTerminal(forPane: pane, in: ls),
+              // A new connection per request, so a fixed JSON-RPC id never collides.
+              let reply = Herdr.roundTrip(Pure.herdrCoreTerminalRequest(id: 1, terminal: terminal),
+                                          timeoutS: timeoutS, at: Paths.herdrCoreSocket) else { return nil }
+        return Pure.herdrCoreCwd(reply)
     }
 }
 
@@ -808,6 +828,8 @@ final class Collector {
         var cwd: String?
         if let a = app, Bundles.herdrHosts.contains(a) {
             cwd = Herdr.foregroundCwd() ?? Sensors.cwdFromHookFiles()
+        } else if app == Bundles.herdrApp {
+            cwd = HerdrApp.focusedCwd() ?? Sensors.cwdFromHookFiles()
         } else if let a = app, Bundles.terminals.contains(a) {
             cwd = Sensors.cwdFromHookFiles()
         }
@@ -1398,7 +1420,7 @@ final class StretchDialog: NSObject, NSWindowDelegate, PendingPanel {
 
 /// TCC answers depend on the *responsible process*: run from a terminal, these lines reflect the terminal's grants.
 /// The daemon logs the same lines at startup, so the authoritative result is in ~/Library/Logs/stint/collector.err.log after kickstart.
-/// `redacted` is what the daemon logs: the window title and the two cwd values are user content and have no
+/// `redacted` is what the daemon logs: the window title and the cwd values are user content and have no
 /// business in a log file that lives forever, so those lines report presence only. The interactive
 /// `--selftest` print keeps the values, which is the point of running it by hand.
 func selftestLines(redacted: Bool = false) -> [String] {
@@ -1432,6 +1454,8 @@ func selftestLines(redacted: Bool = false) -> [String] {
     out.append("herdr socket:       \(Herdr.reachable() ? "reachable (pong)" : "unreachable at \(Paths.herdrSocket)")")
     let herdrCwd = Herdr.foregroundCwd()
     out.append("herdr cwd:          \(redacted ? presence(herdrCwd) : (herdrCwd ?? "nil"))")
+    let herdrAppCwd = HerdrApp.focusedCwd()
+    out.append("Herdr.app cwd:      \(redacted ? presence(herdrAppCwd) : (herdrAppCwd ?? "nil"))")
     let hookCwd = Sensors.cwdFromHookFiles()
     out.append("hook cwd:           \(redacted ? presence(hookCwd) : (hookCwd ?? "nil (no files in \(Paths.cwdDir))"))")
     if let f = Sensors.frontmost() {

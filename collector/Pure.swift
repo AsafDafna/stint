@@ -184,7 +184,10 @@ enum Pure {
 
     /// Exactly what `herdr pane current` sends: one JSON object terminated by "\n".
     static func herdrRequest(id: String) -> Data {
-        let obj: [String: Any] = ["id": id, "method": "pane.current", "params": [String: Any]()]
+        jsonLine(["id": id, "method": "pane.current", "params": [String: Any]()])
+    }
+
+    private static func jsonLine(_ obj: [String: Any]) -> Data {
         var data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
         data.append(0x0A)
         return data
@@ -208,6 +211,48 @@ enum Pure {
               let pane = result["pane"] as? [String: Any] else { return nil }
         if let t = pane["terminal_title_stripped"] as? String, !t.isEmpty { return t }
         if let t = pane["terminal_title"] as? String, !t.isEmpty { return t }
+        return nil
+    }
+
+    // MARK: Herdr.app sockets (app socket + herdr-core JSON-RPC, verified 2026-11-16)
+
+    static func herdrAppStatusRequest() -> Data { jsonLine(["status": [String: Any]()]) }
+
+    static func herdrAppLsRequest() -> Data { jsonLine(["ls": [String: Any]()]) }
+
+    static func herdrCoreTerminalRequest(id: Int, terminal: String) -> Data {
+        jsonLine(["id": id, "jsonrpc": "2.0", "method": "terminal.get", "params": ["terminal": terminal]])
+    }
+
+    /// `focused_pane`, not `agent`: `agent` may be unset when the focused terminal runs no agent.
+    static func herdrAppFocusedPane(_ response: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let pane = obj["focused_pane"] as? String, !pane.isEmpty else { return nil }
+        return pane
+    }
+
+    /// The `terminal` of the first object anywhere in the `ls` reply whose `pane` matches. The walk is
+    /// recursive because the shape of `sub_agents` is not known yet.
+    static func herdrAppTerminal(forPane pane: String, in response: Data) -> String? {
+        guard !pane.isEmpty, let root = try? JSONSerialization.jsonObject(with: response) else { return nil }
+        func walk(_ node: Any) -> String? {
+            if let obj = node as? [String: Any] {
+                if obj["pane"] as? String == pane, let t = obj["terminal"] as? String, !t.isEmpty { return t }
+                for key in obj.keys.sorted() { if let t = walk(obj[key]!) { return t } }
+            } else if let arr = node as? [Any] {
+                for child in arr { if let t = walk(child) { return t } }
+            }
+            return nil
+        }
+        return walk(root)
+    }
+
+    /// `result.foreground.cwd`, falling back to `result.cwd`, which can lag behind the foreground process.
+    static func herdrCoreCwd(_ response: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let result = obj["result"] as? [String: Any] else { return nil }
+        if let fg = result["foreground"] as? [String: Any], let c = fg["cwd"] as? String, !c.isEmpty { return c }
+        if let c = result["cwd"] as? String, !c.isEmpty { return c }
         return nil
     }
 
