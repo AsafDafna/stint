@@ -124,6 +124,34 @@ enum PureTests {
         let coreErr = #"{"id":1,"jsonrpc":"2.0","error":{"code":-32602,"message":"unknown terminal"}}"#
         expect(Pure.herdrCoreCwd(Data(coreErr.utf8)), nil, "core: error reply -> nil")
         expect(Pure.herdrCoreCwd(Data("garbage".utf8)), nil, "core: garbage -> nil")
+        let titledTerm = #"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","title":"demo build","cwd":"/Users/a/dev/demo"}}"#
+        expect(Pure.herdrCoreTitle(Data(titledTerm.utf8)), "demo build", "core title")
+        expect(Pure.herdrCoreTitle(Data(#"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","title":""}}"#.utf8)), nil, "core: empty title -> nil")
+        expect(Pure.herdrCoreTitle(Data(term.utf8)), nil, "core: missing title -> nil")
+        expect(Pure.herdrCoreTitle(Data(coreErr.utf8)), nil, "core title: error reply -> nil")
+        expect(Pure.herdrCoreTitle(Data("garbage".utf8)), nil, "core title: garbage -> nil")
+
+        // --- Moshi: herdr-core attach argv -> terminal address
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "--history", "1000", "t6"]), "t6", "attach while typing")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "--observe", "--history", "1000", "t6"]), "t6", "attach --observe while watching")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "t6", "--json", "--history", "1000", "--observe"]), "t6", "options after the address")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "--history=1000", "t6"]), "t6", "--history=N")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "machine/t7"]), "machine/t7", "machine-qualified address as-is")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "--history", "1000", "t6"]), nil, "missing attach -> nil")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "ls", "attach", "t6"]), nil, "attach not the subcommand -> nil")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "--observe", "--history", "1000"]), nil, "no positional -> nil")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "t6", "t7"]), nil, "two positionals -> nil")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "--follow", "t6"]), nil, "unknown option -> nil")
+        expect(Pure.herdrCoreAttachTerminal(["/x/herdr-core", "attach", "t6", "--history"]), nil, "--history without a value -> nil")
+        expect(Pure.herdrCoreAttachTerminal([]), nil, "empty argv -> nil")
+
+        // --- KERN_PROCARGS2 buffer -> argv
+        let argc = withUnsafeBytes(of: Int32(5)) { Array($0) }
+        let procArgs = argc + Array("/x/herdr-core\0\0\0\0/x/herdr-core\0attach\0--history\01000\0t6\0HOME=/x\0".utf8)
+        expect(Pure.procArgs2Argv(procArgs), ["/x/herdr-core", "attach", "--history", "1000", "t6"], "argv after exec path and padding, env not read")
+        expect(Pure.procArgs2Argv(Array(procArgs.prefix(procArgs.count - 12))), nil, "buffer cut inside argv -> nil")
+        expect(Pure.procArgs2Argv(argc + Array("/x/herdr-core\0\0/x/herdr-core\0attach\0".utf8)), nil, "fewer strings than argc -> nil")
+        expect(Pure.procArgs2Argv([5, 0]), nil, "buffer shorter than the argc header -> nil")
 
         // --- remote input (herdr client tty atime) vs HID idle
         expect(Pure.effectiveIdle(hidIdle: 3600, remoteAge: 12), 12, "remote fresher -> remote age")
@@ -133,15 +161,20 @@ enum PureTests {
         expect(Pure.effectiveIdle(hidIdle: nil, remoteAge: nil), nil, "neither -> nil")
         let hosts: Set<String> = ["com.mitchellh.ghostty"]
         let lock = "com.apple.loginwindow"
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, app: lock, herdrHosts: hosts), true, "locked Mac, fresh remote keystroke -> remote")
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: nil, app: lock, herdrHosts: hosts), false, "nil remoteAge -> not remote")
-        expect(Pure.remoteDecision(hidIdle: 12, remoteAge: 12, app: lock, herdrHosts: hosts), false, "tie -> not remote")
-        expect(Pure.remoteDecision(hidIdle: 5, remoteAge: 12, app: lock, herdrHosts: hosts), false, "hid fresher -> not remote")
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 300, app: lock, herdrHosts: hosts), false, "remote fresher but at threshold -> not remote")
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 299, app: lock, herdrHosts: hosts), true, "just under threshold -> remote")
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, app: "com.mitchellh.ghostty", herdrHosts: hosts), false, "herdr host frontmost -> not remote")
-        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, app: nil, herdrHosts: hosts), true, "no frontmost app -> remote")
-        expect(Pure.remoteDecision(hidIdle: nil, remoteAge: 12, app: lock, herdrHosts: hosts), true, "no hid reading -> remote signal decides")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, client: .herdrTUI, app: lock, herdrHosts: hosts), true, "locked Mac, fresh remote keystroke -> remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: nil, client: .herdrTUI, app: lock, herdrHosts: hosts), false, "nil remoteAge -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 12, remoteAge: 12, client: .herdrTUI, app: lock, herdrHosts: hosts), false, "tie -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 5, remoteAge: 12, client: .herdrTUI, app: lock, herdrHosts: hosts), false, "hid fresher -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 300, client: .herdrTUI, app: lock, herdrHosts: hosts), false, "remote fresher but at threshold -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 299, client: .herdrTUI, app: lock, herdrHosts: hosts), true, "just under threshold -> remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, client: .herdrTUI, app: "com.mitchellh.ghostty", herdrHosts: hosts), false, "herdr host frontmost -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, client: .herdrTUI, app: nil, herdrHosts: hosts), true, "no frontmost app -> remote")
+        expect(Pure.remoteDecision(hidIdle: nil, remoteAge: 12, client: .herdrTUI, app: lock, herdrHosts: hosts), true, "no hid reading -> remote signal decides")
+        let moshi = Pure.RemoteClient.moshi(pid: 100, tdev: 7)
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, client: moshi, app: "com.mitchellh.ghostty", herdrHosts: hosts), true, "Moshi: herdr host frontmost does not veto")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 12, client: moshi, app: lock, herdrHosts: hosts), true, "Moshi: locked Mac, fresh keystroke -> remote")
+        expect(Pure.remoteDecision(hidIdle: 5, remoteAge: 12, client: moshi, app: "com.mitchellh.ghostty", herdrHosts: hosts), false, "Moshi: hid fresher -> not remote")
+        expect(Pure.remoteDecision(hidIdle: 3600, remoteAge: 300, client: moshi, app: lock, herdrHosts: hosts), false, "Moshi: at threshold -> not remote")
 
         // --- dates
         let tz = TimeZone(identifier: "Asia/Jerusalem")!

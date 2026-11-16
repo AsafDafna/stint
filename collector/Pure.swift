@@ -256,23 +256,73 @@ enum Pure {
         return nil
     }
 
+    static func herdrCoreTitle(_ response: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let result = obj["result"] as? [String: Any],
+              let t = result["title"] as? String, !t.isEmpty else { return nil }
+        return t
+    }
+
     // MARK: remote input (herdr client tty atime) vs HID idle
+
+    /// The session leader that owns the freshest remote tty. For Moshi (`moshi-hook hc attach`), `pid` and its
+    /// controlling tty's `e_tdev` find the herdr-core attach child that names the terminal.
+    enum RemoteClient: Equatable {
+        case herdrTUI
+        case moshi(pid: pid_t, tdev: UInt32)
+    }
 
     /// Effective idle: the fresher of HID idle and the remote-input age, whichever signals exist.
     static func effectiveIdle(hidIdle: Int?, remoteAge: Int?) -> Int? {
         [hidIdle, remoteAge].compactMap { $0 }.min()
     }
 
-    /// True when the sample should be attributed to remote work (iPad over mosh into a herdr client): a remote
-    /// keystroke exists, it is strictly fresher than the last HID event (a tie is not evidence), it is under the
-    /// idle threshold, and the frontmost app is not a herdr host (there the local herdr client's tty would also
-    /// be fresh, and the ordinary herdr branch already attributes the time). A missing HID reading does not veto:
-    /// a fresh remote keystroke is the only activity signal then.
-    static func remoteDecision(hidIdle: Int?, remoteAge: Int?, app: String?, herdrHosts: Set<String>) -> Bool {
+    /// True when the sample should be attributed to remote work (iPad over mosh into a herdr client or Moshi): a
+    /// remote keystroke exists, it is strictly fresher than the last HID event (a tie is not evidence), it is under
+    /// the idle threshold, and, for a herdr TUI client, the frontmost app is not a herdr host (there the local
+    /// herdr client's tty would also be fresh, and the ordinary herdr branch already attributes the time). Moshi
+    /// is exempt: it attaches to herdr-core, so the herdr branch would book its time to the TUI's focused pane.
+    /// A missing HID reading does not veto: a fresh remote keystroke is the only activity signal then.
+    static func remoteDecision(hidIdle: Int?, remoteAge: Int?, client: RemoteClient, app: String?, herdrHosts: Set<String>) -> Bool {
         guard let r = remoteAge, r < idleThresholdS else { return false }
         if let h = hidIdle, r >= h { return false }
-        if let a = app, herdrHosts.contains(a) { return false }
+        if client == .herdrTUI, let a = app, herdrHosts.contains(a) { return false }
         return true
+    }
+
+    /// The address in `herdr-core attach [--observe] [--json] [--history N] <terminal>`; nil unless `attach` is the
+    /// subcommand and exactly one positional follows, or on an unknown option (it might take a value).
+    static func herdrCoreAttachTerminal(_ argv: [String]) -> String? {
+        guard argv.count > 1, argv[1] == "attach" else { return nil }
+        var positionals: [String] = []
+        var rest = argv.dropFirst(2).makeIterator()
+        while let arg = rest.next() {
+            switch arg {
+            case "--observe", "--json": continue
+            case "--history": if rest.next() == nil { return nil }
+            case _ where arg.hasPrefix("--history="): continue
+            case _ where arg.hasPrefix("-"): return nil
+            default: positionals.append(arg)
+            }
+        }
+        return positionals.count == 1 ? positionals[0] : nil
+    }
+
+    /// argv from a KERN_PROCARGS2 buffer: a native Int32 argc, the exec path, NUL padding, then argc
+    /// NUL-terminated strings (the environment follows and is never read). nil when the buffer is cut short.
+    static func procArgs2Argv(_ buf: [UInt8]) -> [String]? {
+        guard buf.count >= 4 else { return nil }
+        let argc = Int(buf.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
+        var i = 4
+        while i < buf.count, buf[i] != 0 { i += 1 }
+        while i < buf.count, buf[i] == 0 { i += 1 }
+        var argv: [String] = []
+        while argv.count < argc {
+            guard i < buf.count, let end = buf[i...].firstIndex(of: 0) else { return nil }
+            argv.append(String(decoding: buf[i..<end], as: UTF8.self))
+            i = end + 1
+        }
+        return argv
     }
 
     // MARK: dates

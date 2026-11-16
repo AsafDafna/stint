@@ -312,7 +312,8 @@ weekly reports. It never creates the database, which is why the collector is ins
 
 Remote work (iPad over mosh into herdr) is tracked too: the collector treats a herdr client tty's atime (advances
 only on a keystroke) as a second input signal, and while the Mac is locked it writes those samples as
-`app = remote.herdr` with the focused pane's title and cwd, so the usual cwd rules attribute them.
+`app = remote.herdr` with the focused pane's title and cwd, so the usual cwd rules attribute them. Moshi's
+`moshi-hook hc attach` sessions count too, attributed to the cwd of the herdr-core terminal they are attached to.
 
 After every call of at least 5 minutes the brain writes a pending `calls` row and the menu bar opens
 "Attribute this meeting": whole meeting to one project or sub-project (the same list as the stretch pop-up,
