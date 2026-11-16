@@ -29,8 +29,8 @@ enum Bundles {
     /// The herdr desktop app runs on herdr-core, not on the TUI server, so it must stay out of herdrHosts:
     /// there it would query the wrong socket and veto the remote branch.
     static let herdrApp = "dev.herdr.app"
-    /// Synthetic `app` for samples driven by remote input (iPad over mosh into a herdr client) while the Mac is
-    /// locked. Not a real bundle id on purpose: it must never collide with the brain's NonWorkApps
+    /// Synthetic `app` for samples driven by remote input (iPad over mosh into a herdr client or Moshi) while the
+    /// Mac is idle or locked. Not a real bundle id on purpose: it must never collide with the brain's NonWorkApps
     /// (`com.apple.loginwindow`, the screen saver), and rules attribute these samples by cwd.
     static let remote = "remote.herdr"
     /// Terminals that get the zsh-hook cwd fallback. Ghostty is handled by the herdr branch first.
@@ -485,30 +485,29 @@ enum Sensors {
         return info.kp_eproc.e_ppid
     }
 
-    /// Remote input signal: the newest st_atime among the controlling ttys of *remote* herdr client processes
-    /// (`pbi_comm == "herdr"`; the pane shells are zsh, so `herdr pane send-keys` automation never counts). A
-    /// pty's atime advances only when the client reads a keystroke (verified 2026-09-22: output moves mtime only,
-    /// polling reads do not touch atime), so over mosh from the iPad it is the last remote keystroke while HID
-    /// idle climbs and the Mac is locked. Only session leaders count (mosh-server forkpty's the client, so it
-    /// leads its tty's session; verified 2026-09-22): that excludes the Ghostty-hosted client, whose tty tracks
-    /// local typing and lags HID by ~1 s (would read as "remote fresher than HID" right after switching away
-    /// from Ghostty), and `herdr pane wait-output`-style CLI calls running inside a pane, whose controlling tty
-    /// is the pane's pty. Returns the tty name (for --selftest) and the age; nil when no remote herdr client has a
-    /// tty or on any error. Cost: one proc_pidinfo per process, a few ms per tick.
-    static func remoteInput() -> (tty: String, age: Int)? {
-        var count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard count > 0 else { return nil }
-        var pids = [pid_t](repeating: 0, count: Int(count) / MemoryLayout<pid_t>.size + 64)   // slack for processes spawned in between
-        count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard count > 0 else { return nil }
-        var newest: (tty: String, atime: TimeInterval)?
-        for pid in pids.prefix(Int(count) / MemoryLayout<pid_t>.size) where pid > 0 {
-            var info = proc_bsdinfo()
-            let want = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, want) == want else { continue }
-            guard info.e_tdev != UInt32.max else { continue }   // NODEV: no controlling tty (the herdr server, daemons)
-            let comm = withUnsafeBytes(of: &info.pbi_comm) { raw in String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self) }
-            guard comm == "herdr", info.pbi_flags & UInt32(PROC_FLAG_SLEADER) != 0 else { continue }
+    /// Remote input signal: the newest st_atime among the controlling ttys of *remote* clients: herdr TUI clients
+    /// (`pbi_comm == "herdr"`) and Moshi's `moshi-hook hc attach` (`pbi_comm == "moshi-hook"`). The pane shells
+    /// are zsh, so `herdr pane send-keys` automation never counts. A pty's atime advances only when a reader takes
+    /// a keystroke (verified 2026-09-22: output moves mtime only, polling reads do not touch atime; Moshi typing
+    /// and output verified 2026-11-16), so over mosh from the iPad it is the last remote keystroke while HID idle
+    /// climbs. Only session leaders count (mosh-server forkpty's the client, so it leads its tty's session; verified
+    /// 2026-09-22): that excludes the Ghostty-hosted client, whose tty tracks local typing and lags HID by ~1 s
+    /// (would read as "remote fresher than HID" right after switching away from Ghostty), and `herdr pane
+    /// wait-output`-style CLI calls running inside a pane, whose controlling tty is the pane's pty. Returns the tty
+    /// name (for --selftest), the age and the client; nil when no remote client has a tty or on any error. Cost: one
+    /// proc_pidinfo per process, a few ms per tick.
+    static func remoteInput() -> (tty: String, age: Int, client: Pure.RemoteClient)? {
+        var newest: (tty: String, atime: TimeInterval, client: Pure.RemoteClient)?
+        for pid in pids(UInt32(PROC_ALL_PIDS), 0) {
+            guard let info = bsdInfo(pid) else { continue }
+            guard info.e_tdev != UInt32.max else { continue }   // NODEV: no controlling tty (the herdr server, `moshi-hook serve`, daemons)
+            guard info.pbi_flags & UInt32(PROC_FLAG_SLEADER) != 0 else { continue }
+            let client: Pure.RemoteClient
+            switch comm(info) {
+            case "herdr": client = .herdrTUI
+            case "moshi-hook": client = .moshi(pid: pid, tdev: info.e_tdev)
+            default: continue
+            }
             // e_tdev is the tty's st_rdev; devname_r maps it back to "ttysNNN" and the stat below confirms it.
             var name = [CChar](repeating: 0, count: 64)
             guard devname_r(dev_t(bitPattern: info.e_tdev), mode_t(S_IFCHR), &name, Int32(name.count)) != nil else { continue }
@@ -516,10 +515,57 @@ enum Sensors {
             var st = stat()
             guard tty.hasPrefix("ttys"), stat("/dev/" + tty, &st) == 0, UInt32(bitPattern: st.st_rdev) == info.e_tdev else { continue }
             let atime = TimeInterval(st.st_atimespec.tv_sec) + TimeInterval(st.st_atimespec.tv_nsec) / 1e9
-            if newest == nil || atime > newest!.atime { newest = (tty, atime) }
+            if newest == nil || atime > newest!.atime { newest = (tty, atime, client) }
         }
         guard let n = newest else { return nil }
-        return (n.tty, max(0, Int(Date().timeIntervalSince1970 - n.atime)))
+        return (n.tty, max(0, Int(Date().timeIntervalSince1970 - n.atime)), n.client)
+    }
+
+    /// The herdr-core terminal address Moshi shows: from the argv of the one `herdr-core` child of `moshi-hook`
+    /// on the same tty. nil while Moshi has none (it respawns the child, e.g. to leave `--observe`) or several.
+    static func moshiTerminal(pid hookPid: pid_t, tdev: UInt32) -> String? {
+        let children = pids(UInt32(PROC_PPID_ONLY), UInt32(bitPattern: hookPid)).filter { pid in
+            guard let info = bsdInfo(pid) else { return false }
+            return info.pbi_ppid == UInt32(bitPattern: hookPid) && info.e_tdev == tdev && comm(info) == "herdr-core"
+        }
+        guard children.count == 1, let argv = argv(of: children[0]) else { return nil }
+        return Pure.herdrCoreAttachTerminal(argv)
+    }
+
+    private static let argMax: Int = {
+        var mib: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctl(&mib, 2, &value, &size, nil, 0) == 0 && value > 0 ? Int(value) : 0
+    }()
+
+    private static func argv(of pid: pid_t) -> [String]? {
+        guard argMax > 0 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var buf = [UInt8](repeating: 0, count: argMax)
+        var size = buf.count
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return nil }
+        return Pure.procArgs2Argv(Array(buf.prefix(size)))
+    }
+
+    /// `proc_listpids` for one filter (`PROC_ALL_PIDS`, `PROC_PPID_ONLY`, …); empty on any error.
+    private static func pids(_ type: UInt32, _ typeinfo: UInt32) -> [pid_t] {
+        var count = proc_listpids(type, typeinfo, nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) / MemoryLayout<pid_t>.size + 64)   // slack for processes spawned in between
+        count = proc_listpids(type, typeinfo, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard count > 0 else { return [] }
+        return pids.prefix(Int(count) / MemoryLayout<pid_t>.size).filter { $0 > 0 }
+    }
+
+    private static func bsdInfo(_ pid: pid_t) -> proc_bsdinfo? {
+        var info = proc_bsdinfo()
+        let want = Int32(MemoryLayout<proc_bsdinfo>.size)
+        return proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, want) == want ? info : nil
+    }
+
+    private static func comm(_ info: proc_bsdinfo) -> String {
+        withUnsafeBytes(of: info.pbi_comm) { raw in String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self) }
     }
 
     /// Fallback cwd: newest file written by the zsh hook in ~/.local/state/stint/cwd/.
@@ -542,8 +588,8 @@ enum Sensors {
 enum Herdr {
     static var counter = 0
 
-    /// What one `pane.current` round trip yields about the focused pane. Both fields come from the same
-    /// response so the remote branch, which needs cwd and title, costs one socket call like the herdr branch.
+    /// What one round trip (`pane.current`, or herdr-core `terminal.get` for Moshi) yields about a pane. Both
+    /// fields come from the same response so the remote branch, which needs cwd and title, costs one socket call.
     struct Pane {
         var cwd: String?
         var title: String?
@@ -606,10 +652,23 @@ enum HerdrApp {
               let pane = Pure.herdrAppFocusedPane(status),
               let ls = Herdr.roundTrip(Pure.herdrAppLsRequest(), timeoutS: timeoutS, at: Paths.herdrAppSocket),
               let terminal = Pure.herdrAppTerminal(forPane: pane, in: ls),
-              // A new connection per request, so a fixed JSON-RPC id never collides.
-              let reply = Herdr.roundTrip(Pure.herdrCoreTerminalRequest(id: 1, terminal: terminal),
-                                          timeoutS: timeoutS, at: Paths.herdrCoreSocket) else { return nil }
+              let reply = HerdrCore.terminal(terminal, timeoutS: timeoutS) else { return nil }
         return Pure.herdrCoreCwd(reply)
+    }
+}
+
+// MARK: - herdr-core socket client (JSON-RPC; Herdr.app and Moshi both show herdr-core terminals)
+
+enum HerdrCore {
+    /// The raw `terminal.get` reply. A new connection per request, so a fixed JSON-RPC id never collides.
+    static func terminal(_ address: String, timeoutS: Int = 1) -> Data? {
+        Herdr.roundTrip(Pure.herdrCoreTerminalRequest(id: 1, terminal: address), timeoutS: timeoutS, at: Paths.herdrCoreSocket)
+    }
+
+    /// cwd and title of the terminal Moshi is attached to; nil when it cannot be resolved.
+    static func moshiPane(pid: pid_t, tdev: UInt32) -> Herdr.Pane? {
+        guard let address = Sensors.moshiTerminal(pid: pid, tdev: tdev), let reply = terminal(address) else { return nil }
+        return Herdr.Pane(cwd: Pure.herdrCoreCwd(reply), title: Pure.herdrCoreTitle(reply))
     }
 }
 
@@ -809,15 +868,25 @@ final class Collector {
         let front = Sensors.frontmost()
         let app = front?.bundleIdentifier
         let hidIdle = Sensors.idleSeconds()
-        let remoteAge = Sensors.remoteInput()?.age
-        let idle = Pure.effectiveIdle(hidIdle: hidIdle, remoteAge: remoteAge)
-        if Pure.remoteDecision(hidIdle: hidIdle, remoteAge: remoteAge, app: app, herdrHosts: Bundles.herdrHosts) {
-            // Working from the iPad: the Mac is locked (frontmost is loginwindow, which the brain drops), so the
-            // sample describes the herdr pane instead. Title is never nil (the brain's health check would flag
-            // "title NULL"); herdr focus is session-wide, so the focused pane stands in for the remote client's.
-            let pane = Herdr.currentPane()
-            return Sample(ts: nowTs(), kind: "sample", app: Bundles.remote, title: pane?.title ?? "remote", url: nil,
-                          cwd: pane?.cwd ?? Sensors.cwdFromHookFiles(), idleS: idle, callApp: Sensors.callApp())
+        let remote = Sensors.remoteInput()
+        let idle = Pure.effectiveIdle(hidIdle: hidIdle, remoteAge: remote?.age)
+        if let r = remote, Pure.remoteDecision(hidIdle: hidIdle, remoteAge: r.age, client: r.client, app: app, herdrHosts: Bundles.herdrHosts) {
+            // Working from the iPad: the Mac is idle or locked (loginwindow, which the brain drops), so the sample
+            // describes the remote client's pane instead. Title is never nil (the brain's health check would flag
+            // "title NULL").
+            let cwd: String?, title: String?
+            switch r.client {
+            case .herdrTUI:
+                // herdr focus is session-wide, so the focused pane stands in for the remote client's.
+                let pane = Herdr.currentPane()
+                (cwd, title) = (pane?.cwd ?? Sensors.cwdFromHookFiles(), pane?.title)
+            case .moshi(let pid, let tdev):
+                // No hook-file fallback: Moshi's picker keystrokes would book iPad time to whatever shell last drew a prompt.
+                let pane = HerdrCore.moshiPane(pid: pid, tdev: tdev)
+                (cwd, title) = (pane?.cwd, pane?.title)
+            }
+            return Sample(ts: nowTs(), kind: "sample", app: Bundles.remote, title: title ?? "remote", url: nil,
+                          cwd: cwd, idleS: idle, callApp: Sensors.callApp())
         }
         var title: String?
         if let pid = front?.processIdentifier { title = Pure.normalizeTitle(Sensors.focusedWindowTitle(pid: pid)) }
@@ -1449,7 +1518,17 @@ func selftestLines(redacted: Bool = false) -> [String] {
         out.append("automation \(b): \(meaning)")
     }
     out.append("idle CGEventSource: \(Sensors.idleSeconds().map(String.init) ?? "nil")  IOKit: \(Sensors.idleSecondsIOKit().map(String.init) ?? "nil")")
-    out.append("remote input:       \(Sensors.remoteInput().map { "\($0.tty) age=\($0.age)s" } ?? "none")")
+    var remoteLine = "none"
+    if let r = Sensors.remoteInput() {
+        switch r.client {
+        case .herdrTUI:
+            remoteLine = "\(r.tty) age=\(r.age)s client=herdr"
+        case .moshi(let pid, let tdev):
+            let cwd = HerdrCore.moshiPane(pid: pid, tdev: tdev)?.cwd
+            remoteLine = "\(r.tty) age=\(r.age)s client=moshi cwd=\(redacted ? presence(cwd) : (cwd ?? "nil"))"
+        }
+    }
+    out.append("remote input:       \(remoteLine)")
     out.append("call_app:           \(Sensors.callApp() ?? "none")")
     out.append("herdr socket:       \(Herdr.reachable() ? "reachable (pong)" : "unreachable at \(Paths.herdrSocket)")")
     let herdrCwd = Herdr.foregroundCwd()
