@@ -147,11 +147,12 @@ Check: `tmutil isexcluded "$HOME/Library/Application Support/stint"` prints `[Ex
 ### 6. Optional: terminal directories (ask the person)
 
 Ask which terminal and shell the person uses. With herdr (a terminal multiplexer) in Ghostty, the collector
-asks herdr's socket for the focused pane's directory; skip this step. For zsh in Ghostty without herdr,
+asks herdr's socket for the focused pane's directory; skip this step. Herdr.app (the herdr desktop app) works
+the same way through its own sockets, so skip this step for it too. For zsh in Ghostty without herdr,
 Terminal, iTerm2 or Warp, add these lines to `~/.zshrc`. Other terminals and shells record no directory.
 
 ```zsh
-# stint: expose the active shell's cwd to the collector (fallback for terminals other than herdr/Ghostty)
+# stint: expose the active shell's cwd to the collector (fallback for terminals other than herdr/Ghostty and Herdr.app)
 _stint_cwd() { local d="$HOME/.local/state/stint/cwd"; [[ -d "$d" ]] || command mkdir -p -m 700 "$d"; ( umask 077; print -rn -- "$PWD" > "$d/${${TTY:t}:-notty}" ) }
 autoload -Uz add-zsh-hook && add-zsh-hook chpwd _stint_cwd && add-zsh-hook precmd _stint_cwd
 ```

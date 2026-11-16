@@ -92,6 +92,39 @@ enum PureTests {
         expect(Pure.herdrPaneTitle(Data(err.utf8)), nil, "title: error response -> nil")
         expect(Pure.herdrPaneTitle(Data("garbage".utf8)), nil, "title: garbage -> nil")
 
+        // --- Herdr.app protocol (app socket + herdr-core)
+        expect(String(decoding: Pure.herdrAppStatusRequest(), as: UTF8.self), "{\"status\":{}}\n", "app status wire format")
+        expect(String(decoding: Pure.herdrAppLsRequest(), as: UTF8.self), "{\"ls\":{}}\n", "app ls wire format")
+        expect(String(decoding: Pure.herdrCoreTerminalRequest(id: 1, terminal: "t6"), as: UTF8.self),
+               #"{"id":1,"jsonrpc":"2.0","method":"terminal.get","params":{"terminal":"t6"}}"# + "\n", "core terminal.get wire format")
+        let status = #"{"zoom":1.0,"space":"sp1","tab":"tb1","focused_pane":"p9","layout":"main","agent":"t6","floats":{},"overlays":[],"errors":[]}"#
+        expect(Pure.herdrAppFocusedPane(Data(status.utf8)), "p9", "focused_pane from status")
+        let appErr = #"{"error":"unknown request"}"#
+        expect(Pure.herdrAppFocusedPane(Data(appErr.utf8)), nil, "status: error reply -> nil")
+        expect(Pure.herdrAppFocusedPane(Data(#"{"space":"sp1","agent":"t6"}"#.utf8)), nil, "status: missing focused_pane -> nil")
+        expect(Pure.herdrAppFocusedPane(Data(#"{"focused_pane":""}"#.utf8)), nil, "status: empty focused_pane -> nil")
+        expect(Pure.herdrAppFocusedPane(Data("garbage".utf8)), nil, "status: garbage -> nil")
+        let ls = #"{"spaces":[{"id":"sp1","name":"demo","folder":"/Users/a","machine":null,"active":true,"tabs":[{"id":"tb1","name":"1","active":true,"settled":false,"terminals":[{"terminal":"t4","status":"idle"},{"terminal":"t5","pane":"p8","status":"idle","app":null,"name":null,"sub_agents":[]},{"terminal":"t6","pane":"p9","status":"working","app":"claude-code","name":null,"sub_agents":[]}]}]}]}"#
+        expect(Pure.herdrAppTerminal(forPane: "p9", in: Data(ls.utf8)), "t6", "terminal for the focused pane")
+        expect(Pure.herdrAppTerminal(forPane: "p7", in: Data(ls.utf8)), nil, "pane not in ls -> nil")
+        expect(Pure.herdrAppTerminal(forPane: "", in: Data(ls.utf8)), nil, "empty pane -> nil")
+        let nested = #"{"spaces":[{"id":"sp1","tabs":[{"id":"tb1","terminals":[{"terminal":"t6","pane":"p9","sub_agents":[{"terminal":"t7","pane":"p10"}]}]}]}]}"#
+        expect(Pure.herdrAppTerminal(forPane: "p10", in: Data(nested.utf8)), "t7", "nested sub-agent found by the recursive walk")
+        expect(Pure.herdrAppTerminal(forPane: "p9", in: Data(nested.utf8)), "t6", "parent wins over its sub-agents")
+        expect(Pure.herdrAppTerminal(forPane: "p9", in: Data(appErr.utf8)), nil, "ls: error reply -> nil")
+        expect(Pure.herdrAppTerminal(forPane: "p9", in: Data("garbage".utf8)), nil, "ls: garbage -> nil")
+        let term = #"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","cwd":"/Users/a/other","foreground":{"argv":["claude"],"cwd":"/Users/a/dev/demo","name":"claude","pid":1}}}"#
+        expect(Pure.herdrCoreCwd(Data(term.utf8)), "/Users/a/dev/demo", "foreground cwd preferred")
+        let fgEmpty = #"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","cwd":"/Users/a/other","foreground":{"cwd":"","pid":1}}}"#
+        expect(Pure.herdrCoreCwd(Data(fgEmpty.utf8)), "/Users/a/other", "empty foreground cwd falls back to cwd")
+        let noFgObj = #"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","cwd":"/Users/a/other"}}"#
+        expect(Pure.herdrCoreCwd(Data(noFgObj.utf8)), "/Users/a/other", "missing foreground falls back to cwd")
+        let allEmpty = #"{"id":1,"jsonrpc":"2.0","result":{"address":"t6","cwd":"","foreground":{"cwd":""}}}"#
+        expect(Pure.herdrCoreCwd(Data(allEmpty.utf8)), nil, "all cwds empty -> nil")
+        let coreErr = #"{"id":1,"jsonrpc":"2.0","error":{"code":-32602,"message":"unknown terminal"}}"#
+        expect(Pure.herdrCoreCwd(Data(coreErr.utf8)), nil, "core: error reply -> nil")
+        expect(Pure.herdrCoreCwd(Data("garbage".utf8)), nil, "core: garbage -> nil")
+
         // --- remote input (herdr client tty atime) vs HID idle
         expect(Pure.effectiveIdle(hidIdle: 3600, remoteAge: 12), 12, "remote fresher -> remote age")
         expect(Pure.effectiveIdle(hidIdle: 4, remoteAge: 900), 4, "hid fresher -> hid idle")
